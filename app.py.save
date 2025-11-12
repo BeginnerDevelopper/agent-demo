@@ -1,0 +1,265 @@
+import os
+import requests
+import datetime
+import re
+from flask import Flask, request
+from twilio.twiml.messaging_response import MessagingResponse
+from langdetect import detect
+from transformers import pipeline
+from dotenv import load_dotenv
+import dateparser
+
+load_dotenv()
+
+app = Flask(__name__)
+
+# --- Configuración de Cal.com ---
+CAL_API_KEY = os.getenv("CAL_API_KEY")
+CAL_USER = "call-me-please-2tibhe"
+CAL_EVENT_TYPE = "agente-demo"  # type of event
+
+# --- Respuestas por idioma ---
+RESPONSES = {
+    "es": {
+        "pricing": "Nuestros planes empiezan en $10/mes.",
+        "help": "¡Claro! ¿En qué puedo ayudarte?",
+        "location": "Estamos ubicados en Queens, NY.",
+        "hours": "Nuestro horario es de lunes a sábado de 7 AM a 5  PM.",
+        "delivery": "Sí, realizamos entregas locales dentro de Queens.",
+        "appointment": "¡Claro! Dime cuándo quieres tu cita (ej: mañana a las 3 PM).",
+        "appointment_confirmed": "✅ Cita reservada para {date} a las {time}! Revisa tu email.",
+        "appointment_error": "Lo siento, hubo un error al reservar. ¿Puedes intentar con otra fecha?",
+        "default": "Gracias por tu mensaje. 😊"
+    },
+    "en": {
+        "pricing": "Our plans start at $10/month.",
+        "help": "Of course! How can I help?",
+        "location": "We are located in Queens, NY.",
+        "hours": "We're open Monday to Saturday from 7  AM to 5 PM.",
+        "delivery": "Yes, we offer local deliveries within Queens.",
+        "appointment": "Sure! Tell me when you'd like your appointment (e.g., tomorrow at 3 PM).",
+        "appointment_confirmed": "✅ Appointment scheduled for {date} at {time}! Check your email.",
+        "appointment_error": "Sorry, there was an error booking your appointment. Could you try another date?",
+        "default": "Thank you for your message. 😊"
+    },
+    "fr": {
+        "pricing": "Nos formules commencent à 10 $/mois.",
+        "help": "Bien sûr ! Comment puis-je vous aider ?",
+        "location": "Nous sommes situés à Queens, NY.",
+        "hours": "Nous sommes ouverts du lundi au samedi de 7h à 17h.",
+        "delivery": "Oui, nous effectuons des livraisons locales dans Queens.",
+        "appointment": "Bien sûr ! Dites-moi quand vous souhaitez votre rendez-vous.",
+        "appointment_confirmed": "✅ Rendez-vous programmé pour le {date} à {time} !",
+        "appointment_error": "Désolé, une erreur s'est produite lors de la réservation. Pouvez-vous essayer une autre date ?",
+        "default": "Merci pour votre message. 😊"
+    },
+    "de": {
+        "pricing": "Unsere Pläne beginnen bei 10 $/Monat.",
+        "help": "Natürlich! Wie kann ich Ihnen helfen?",
+        "location": "Wir befinden uns in Queens, NY.",
+        "hours": "Wir haben montags bis samstags von 7 bis 17 Uhr geöffnet.",
+        "delivery": "Ja, wir liefern lokal innerhalb von Queens.",
+        "appointment": "Natürlich! Sagen Sie mir, wann Sie einen Termin möchten.",
+        "appointment_confirmed": "✅ Termin gebucht für den {date} um {time}!",
+        "appointment_error": "Entschuldigung, beim Buchen ist ein Fehler aufgetreten. Können Sie bitte ein anderes Datum versuchen?",
+        "default": "Danke für Ihre Nachricht. 😊"
+    },
+    "it": {
+        "pricing": "I nostri piani partono da 10 $/mese.",
+        "help": "Certo! Come posso aiutarti?",
+        "location": "Siamo a Queens, NY.",
+        "hours": "Siamo aperti dal lunedì al sabato dalle 7:00 alle 17:00.",
+        "delivery": "Sì, effettuiamo consegne locali a Queens.",
+        "appointment": "Certo! Dimmi quando vuoi il tuo appuntamento.",
+        "appointment_confirmed": "✅ Appuntamento fissato per il {date} alle {time}!",
+        "appointment_error": "Spiacenti, si è verificato un errore durante la prenotazione. Potresti provare un'altra data?",
+        "default": "Grazie per il tuo messaggio. 😊"
+    },
+    "pt": {
+        "pricing": "Nossos planos começam em US$ 10/mês.",
+        "help": "Claro! Como posso ajudar você?",
+        "location": "Estamos localizados em Queens, NY.",
+        "hours": "Estamos abertos de segunda a sábado das 7h às 18h.",
+        "delivery": "Sim, fazemos entregas locais em Queens.",
+        "appointment": "Claro! Me diga quando você quer sua consulta.",
+        "appointment_confirmed": "✅ Consulta agendada para {date} às {time}!",
+        "appointment_error": "Desculpe, ocorreu um erro ao agendar. Você pode tentar outra data?",
+        "default": "Obrigado pela sua mensagem. 😊"
+    }
+}
+
+print("⏳ Cargando modelo...")
+intent_classifier = pipeline(
+    "zero-shot-classification",
+    model="facebook/bart-large-mnli",
+    device=-1
+)
+print("✅ Modelo listo.")
+
+def create_cal_booking(start_time):
+    if not CAL_API_KEY:
+        print("❌ Falta CAL_API_KEY en .env")
+        return False
+
+        start_iso = start_time.isoformat()
+        end_time = start_time + dateparser.parse("1 hour", settings={"RELATIVE_BASE": start_time})
+        end_iso = end_time.isoformat()
+
+        url = "https://api.cal.com/v1/bookings"
+        headers = {"Content-Type":"application/json"}
+        payload = {
+           "apiKey": CAL_API_KEY,
+           "eventTypeId": CAL_EVENT_TYPE,
+           "start": start_iso,
+           "end": end_iso,
+           "language": "en",
+           "responses": {
+               "name": "Cliente WhatsApp",
+               "email": "cliente@example.com",
+               "notes": "Reservado desde WhatsApp"
+        }
+    }
+    try:
+        response = requests.post(url, json=payload, headers=headers)
+        if response.status_code == 201:
+            return True
+        else:
+            print(f"❌ Error Cal.com: {response.status_code} - {response.text}")
+            return False
+    except Exception as e:
+        print(f" Excepcion al llamar a Cal.com: {e}")
+        return False
+
+@app.route("/webhook", methods=["POST"])
+def whatsapp_webhook():
+    msg = request.values.get("Body", "").strip()
+    if not msg:
+        return str(MessagingResponse().message("No message received."))
+
+    # Detectar idioma
+    try:
+        lang = detect(msg)
+        lang = lang if lang in RESPONSES else "en"
+    except:
+        lang = "en"
+
+    # 🔑 Clasificar intención con TODAS tus categorías
+    try:
+        # Incluye todas las intenciones que usas en RESPONSES
+        result = intent_classifier(msg, ["pricing", "help", "location", "hours", "delivery", "appointment"])
+        intent = result["labels"][0]
+    except:
+        intent = "default"
+
+    resp = MessagingResponse()
+
+    # Manejo especial para citas
+    if intent == "appointment":
+#Extract  date of  message
+        parsed = dateparser.parse(msg, settings={"PREFER_DATES_FROM": "future"})
+        if not parsed:
+            now = datetime.datetime.now()
+            if "hoy" in msg.lower() or "today" in msg.lower():
+                base_date = now
+            elif "mañana" in msg.lower() or "tomorrow" in msg.lower():
+                base_date = now + datetime.timedelta(days=1)
+            else:
+                base_date = now + datetime.timedelta(days=1)
+
+            hour_match = re.search(r'(\d{1,2})\s*(?::\s*(\d{2}))?\s*(am|pm|AM|PM)?', msg, re.IGNORECASE)
+            if hour_match:
+                hour = int(hour_match.group(1))
+                minute = int(hour_match.group(2)) if hour_match.group(2) else 0
+                am_pm = hour_match.group(3)
+                if am_pm and am_pm.lower() == "pm" and hour != 12:
+                    hour += 12
+                elif am_pm and am_pm.lower() == "am" and hour == 12:
+                    hour = 0
+                parsed = base_date.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            else:
+                parsed = base_date.replace(hour=10, minute=0, second=0, microsecond=0)
+
+        if parsed:
+            date_str = parsed.strftime("%Y-%m-%d")
+            time_str = parsed.strftime("%I:%M %p")
+            success = create_cal_booking(parsed)
+            if success:
+                text = RESPONSES[lang]["appointment_confirmed"].format(date=date_str, time=time_str)
+            else:
+                text = RESPONSES[lang]["appointment_error"]
+        else:
+            text = RESPONSES[lang]["appointment"]
+    else:
+        # Para todas las demás intenciones: entrega la respuesta directa
+        text = RESPONSES[lang].get(intent, RESPONSES[lang]["default"])
+
+    resp.message(text)
+    return str(resp)
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000, debug=False)
+  GNU nano 7.2 /home/developer/voice-agent-demo/app.py
+        "pricing": "Nossos planos começam em US$ 10/mês.",
+        "help": "Claro! Como posso ajudar você?",
+        "location": "Estamos localizados em Queens, NY.",
+        "hours": "Estamos abertos de segunda a sábado das 7h às>
+        "delivery": "Sim, fazemos entregas locais em Queens.",
+        "appointment": "Claro! Me diga quando você quer sua con>
+        "appointment_confirmed": "✅ Consulta agendada para {da>
+        "appointment_error": "Desculpe, ocorreu um erro ao agen>
+        "default": "Obrigado pela sua mensagem. 😊"
+    }
+}
+
+print("⏳ Cargando modelo...")
+intent_classifier = pipeline(
+    "zero-shot-classification",
+    model="facebook/bart-large-mnli",
+    device=-1
+)
+print("✅ Modelo listo.")
+
+def create_cal_booking(start_time):
+    if not CAL_API_KEY:
+        print("❌ Falta CAL_API_KEY en .env")
+        return False
+
+        start_iso = start_time.isoformat()
+        end_time = start_time + dateparser.parse("1 hour", sett>
+        end_iso = end_time.isoformat()
+
+
+^G Help     ^O Write Out^W Where Is ^K Cut      ^T Execute
+^X Exit     ^R Read File^\ Replace  ^U Paste    ^J Justify  GNU nano 7.2 /home/developer/voice-agent-demo/app.py
+        "pricing": "Nossos planos começam em US$ 10/mês.",
+        "help": "Claro! Como posso ajudar você?",
+        "location": "Estamos localizados em Queens, NY.",
+        "hours": "Estamos abertos de segunda a sábado das 7h às>
+        "delivery": "Sim, fazemos entregas locais em Queens.",
+        "appointment": "Claro! Me diga quando você quer sua con>
+        "appointment_confirmed": "✅ Consulta agendada para {da>
+        "appointment_error": "Desculpe, ocorreu um erro ao agen>
+        "default": "Obrigado pela sua mensagem. 😊"
+    }
+}
+
+print("⏳ Cargando modelo...")
+intent_classifier = pipeline(
+    "zero-shot-classification",
+    model="facebook/bart-large-mnli",
+    device=-1
+)
+print("✅ Modelo listo.")
+
+def create_cal_booking(start_time):
+    if not CAL_API_KEY:
+        print("❌ Falta CAL_API_KEY en .env")
+        return False
+
+        start_iso = start_time.isoformat()
+        end_time = start_time + dateparser.parse("1 hour", sett>
+        end_iso = end_time.isoformat()
+
+
+
+

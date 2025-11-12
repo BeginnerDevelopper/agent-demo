@@ -1,0 +1,36 @@
+# Archivos de entorno y configuración sensible
+.env
+*.env
+.env.*
+
+# Archivos y carpetas de Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.db
+*.sqlite3
+
+# Archivos temporales o de logs
+*.log
+*.tmp
+*.bak
+
+# Archivos de IDEs / entornos
+.vscode/
+.idea/
+*.swp
+
+# Archivos del sistema
+.DS_Store
+Thumbs.db
+
+# Archivos de ngrok y otros tokens locales
+ngrok.yml
+*.pem
+*.key
+
+# Entornos virtuales
+venv/
+.env/
+.venv/
